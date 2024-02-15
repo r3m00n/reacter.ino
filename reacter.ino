@@ -1,3 +1,5 @@
+#include <Arduino.h>
+
 // Pin-Definitionen für Tasten und LEDs
 const uint8_t P1ButtonPin = 12;
 const uint8_t P2ButtonPin = 2;
@@ -14,8 +16,8 @@ const uint8_t RGB_Brightness = 40;
 unsigned long goTime, currentMillis, lastButtonPress;
 bool playing, go;
 uint8_t p1score, p2score;
-uint8_t gameMode; // 0: nur grün, 1: alle Farben
-uint8_t signal;   // Farbe der Led die angeht. Wenn grün: gedrücken!
+uint8_t gameMode = 1; // 1|rot: alle Farben, 2|grün: nur grün, 3|blau: gegen Bot
+uint8_t signal;       // Farbe der Led die angeht. Wenn grün: gedrücken!
 
 // Funktion zum Ausschalten der RGB-LED
 void turnOffRgb()
@@ -45,7 +47,7 @@ void selectGameMode()
   bool gameSelected = false;
   unsigned long previousMillis = 0;
   uint16_t interval = 500;
-  uint8_t ledState, ledColor, ledPin;
+  uint8_t ledState, ledColor;
 
   while (!gameSelected)
   {
@@ -56,26 +58,13 @@ void selectGameMode()
       previousMillis = currentMillis;
       ledState = ledState == 0 ? RGB_Brightness : 0;
 
-      if (gameMode == 0)
-      {
-        ledPin = GreenPin;
-      }
-      else if (gameMode == 1)
-      {
-        if (ledState == RGB_Brightness)
-        {
-          ledColor = ((ledColor + 1) % 3) + 1;
-
-          ledPin = getPinByColor(ledColor);
-        }
-      }
       if (ledState == 0)
       {
         turnOffRgb();
       }
       else
       {
-        analogWrite(ledPin, ledState);
+        analogWrite(getPinByColor(gameMode), ledState);
       }
     }
 
@@ -83,40 +72,21 @@ void selectGameMode()
     if (digitalRead(P1ButtonPin) == 0 && millis() >= lastButtonPress + 500)
     {
       lastButtonPress = millis();
-      gameMode = (gameMode + 1) % 2;
+      gameMode = ((gameMode + 1) % 3) + 1;
     }
     // Spieler 2 bestätigt den Spielmodus und startet das Spiel
     if (digitalRead(P2ButtonPin) == 0)
     {
+      Serial.print("Spielmodus: ");
+      Serial.println(gameMode);
       gameSelected = true;
       turnOffRgb();
-
-      if (gameMode == 0)
+      for (int i = 0; i < 5; ++i)
       {
-        // Grünes LED-Blinken für Spielmodus 0
-        for (int i = 0; i < 3; ++i)
-        {
-          delay(250);
-          analogWrite(GreenPin, RGB_Brightness);
-          delay(250);
-          analogWrite(GreenPin, 0);
-        }
-      }
-      else if (gameMode == 1)
-      {
-        // RGB-LEDs blinken für Spielmodus 1
-        delay(250);
-        analogWrite(RedPin, RGB_Brightness);
-        delay(250);
-        analogWrite(RedPin, 0);
-        delay(250);
-        analogWrite(GreenPin, RGB_Brightness);
-        delay(250);
-        analogWrite(GreenPin, 0);
-        delay(250);
-        analogWrite(BluePin, RGB_Brightness);
-        delay(250);
-        analogWrite(BluePin, 0);
+        delay(150);
+        analogWrite(getPinByColor(gameMode), RGB_Brightness);
+        delay(150);
+        analogWrite(getPinByColor(gameMode), 0);
       }
     }
   }
@@ -142,6 +112,12 @@ void startSequence()
   Serial.println("Spiel gestartet");
 }
 
+// Funktion zur Anzeige der Reaktionszeit
+void displayReactionTime()
+{
+  Serial.println(millis() - goTime);
+}
+
 // Funktion für schnelles Blinken einer LED
 void fastBlink(uint8_t ledPin)
 {
@@ -154,10 +130,21 @@ void fastBlink(uint8_t ledPin)
   }
 }
 
+// Funktion zur Überprüfung, ob der Bot drücken soll
+bool didBotPress()
+{
+  const unsigned long timePassed = millis() - goTime;
+  const bool shouldPressWithoutGo = !go && random(800000) == 0;
+  const bool shouldPressWithGoEarly = go && timePassed > 100 && timePassed < 400 && random(-10 * timePassed + 5000) == 0;
+  const bool shouldPressWithGoLate = go && timePassed >= 400 && random(500) == 0;
+
+  return shouldPressWithoutGo || shouldPressWithGoEarly || shouldPressWithGoLate;
+}
+
 // Funktion zum Überprüfen der Spieler-Eingabe
 void checkPlayerInput()
 {
-  if (digitalRead(P1ButtonPin) == 0)
+  if (gameMode != 3 && digitalRead(P1ButtonPin) == 0)
   {
     digitalWrite(P1LedPin, HIGH);
     playing = false;
@@ -166,6 +153,7 @@ void checkPlayerInput()
     {
       p1score++;
       Serial.println("P1 pressed first");
+      displayReactionTime();
       delay(1000);
     }
     else
@@ -185,6 +173,7 @@ void checkPlayerInput()
     {
       p2score++;
       Serial.println("P2 pressed first");
+      displayReactionTime();
       delay(1000);
     }
     else
@@ -195,7 +184,27 @@ void checkPlayerInput()
     }
     digitalWrite(P2LedPin, 0);
     delay(500);
-    signal = 0;
+  }
+  if (gameMode == 3 && didBotPress())
+  {
+    digitalWrite(P1LedPin, HIGH);
+    playing = false;
+
+    if (go && signal == 2)
+    {
+      p1score++;
+      Serial.println("Bot pressed first");
+      displayReactionTime();
+      delay(1000);
+    }
+    else
+    {
+      p2score++;
+      Serial.println("Bot pressed too early");
+      fastBlink(P1LedPin);
+    }
+    digitalWrite(P1LedPin, 0);
+    delay(500);
   }
 }
 
@@ -259,11 +268,7 @@ void loop()
     if (go)
     {
       // Festlegen der Signal-LED-Farbe entsprechend dem Spielmodus
-      if (gameMode == 0)
-      {
-        signal = 2; // grün
-      }
-      else if (gameMode == 1)
+      if (gameMode == 1)
       {
         // Zufällige Auswahl der Farbe für Spielmodus 1
         if (signal == 0)
@@ -277,6 +282,10 @@ void loop()
           analogWrite(getPinByColor(signal), 0);
           signal = 0;
         }
+      }
+      else if (gameMode == 2 || gameMode == 3)
+      {
+        signal = 2; // grün
       }
       // Einschalten der Signal-LED
       analogWrite(getPinByColor(signal), RGB_Brightness);
